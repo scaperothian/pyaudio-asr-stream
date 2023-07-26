@@ -74,7 +74,7 @@ class SpeechRecognitionEngine:
     dt - data type of samples - typ. pyaudio.paInt8 (audio cards tend to be 8-bit)
     nchan - number of channels of audio to recordd. - typ. 1
     '''
-    def __init__(self, sr, dt, chunk, nchan, filepath=''):
+    def __init__(self, sr, dt, chunk, nchan, lookback, filepath=''):
         self.listener = Listener(sr=sr, dt=dt, chunk=chunk, nchan=nchan)
         self.audio_q = list()
         self.sample_rate = sr
@@ -89,19 +89,20 @@ class SpeechRecognitionEngine:
 
     def inference_loop(self, qdepth):
         i = 0
+        zeros = np.zeros((CHUNK_SIZE,), dtype=int)
+        pred_q = [struct.pack(f'{CHUNK_SIZE}h', *zeros)] * LOOKBACK
         while True:
             if len(self.audio_q) < qdepth:
                 continue
             else:
-                pred_q = self.audio_q.copy()
-                self.audio_q.clear()
-                start = time.time()
+                pred_q.extend(self.audio_q)
+                pred_q = pred_q[QUEUE_DEPTH:]
 
-                samples = []
-                for s in pred_q:
-                    format_string = f'{CHUNK_SIZE}h'
-                    samples.extend(struct.unpack(format_string, s))
-                waveform = torch.Tensor(samples).reshape(1,len(samples))
+                self.audio_q.clear()
+
+                start = time.time()
+                samples = [sample for s in pred_q for sample in struct.unpack(f'{CHUNK_SIZE}h', s)]
+                waveform = torch.Tensor(samples).reshape(1, len(samples))
                 waveform = waveform.to(device)
 
                 with torch.inference_mode():
@@ -122,13 +123,14 @@ if __name__ == '__main__':
     SAMPLE_DATATYPE = pyaudio.paInt16
     SAMPLE_RATE = 16000 # data type of model
     CHUNK_SIZE = 1024
-    QUEUE_DEPTH = 32 #as written, 2 seconds of data makes a big difference in performance
+    QUEUE_DEPTH = 8 #as written, 0.5 seconds of data makes a big difference in performance
+    LOOKBACK = QUEUE_DEPTH * 6 # 3s of lookback
     NCHANNELS = 1
     window_size = CHUNK_SIZE * QUEUE_DEPTH / SAMPLE_RATE
     print(f'Sample from audio card and save off data every {window_size}s')
 
     try:
-        asr_engine = SpeechRecognitionEngine(SAMPLE_RATE, SAMPLE_DATATYPE, CHUNK_SIZE, NCHANNELS)
+        asr_engine = SpeechRecognitionEngine(SAMPLE_RATE, SAMPLE_DATATYPE, CHUNK_SIZE, NCHANNELS, LOOKBACK)
         asr_engine.run(QUEUE_DEPTH)
         threading.Event().wait()
 
